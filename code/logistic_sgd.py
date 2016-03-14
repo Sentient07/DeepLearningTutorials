@@ -86,8 +86,8 @@ class LogisticRegression(object):
         else:
             self.W = W
 
-        # initialize the baises b as a vector of n_out 0s if the parameter b is
-        #not none
+        # initialize the biases b as a vector of n_out 0s if the parameter b is
+        #none
         if b is None:
             self.b = theano.shared(
                     value=numpy.zeros((n_out,), dtype=theano.config.floatX),

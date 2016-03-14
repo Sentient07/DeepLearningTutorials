@@ -11,131 +11,21 @@ import theano.tensor.shared_randomstreams
 import gzip
 from collections import OrderedDict
 from logistic_sgd import LogisticRegression, load_data
-
-
-
-class HiddenLayer(object):
-    def __init__(self, rng, input, n_in, n_out, W=None, b=None,
-                 activation=T.tanh):
-        """
-        Typical hidden layer of a MLP: units are fully-connected and have
-        sigmoidal activation function. Weight matrix W is of shape (n_in,n_out)
-        and the bias vector b is of shape (n_out,).
-
-        NOTE : The nonlinearity used here is tanh
-
-        Hidden unit activation is given by: tanh(dot(input,W) + b)
-
-        :type rng: numpy.random.RandomState
-        :param rng: a random number generator used to initialize weights
-
-        :type input: theano.tensor.dmatrix
-        :param input: a symbolic tensor of shape (n_examples, n_in)
-
-        :type n_in: int
-        :param n_in: dimensionality of input
-
-        :type n_out: int
-        :param n_out: number of hidden units
-
-        :type activation: theano.Op or function
-        :param activation: Non linearity to be applied in the hidden
-                           layer
-        """
-        self.input = input
-        # end-snippet-1
-
-        # `W` is initialized with `W_values` which is uniformely sampled
-        # from sqrt(-6./(n_in+n_hidden)) and sqrt(6./(n_in+n_hidden))
-        # for tanh activation function
-        # the output of uniform if converted using asarray to dtype
-        # theano.config.floatX so that the code is runable on GPU
-        # Note : optimal initialization of weights is dependent on the
-        #        activation function used (among other things).
-        #        For example, results presented in [Xavier10] suggest that you
-        #        should use 4 times larger initial weights for sigmoid
-        #        compared to tanh
-        #        We have no info for other function, so we use the same as
-        #        tanh.
-        if W is None:
-            W_values = np.asarray(
-                rng.uniform(
-                    low=-np.sqrt(6. / (n_in + n_out)),
-                    high= np.sqrt(6. / (n_in + n_out)),
-                    size=(n_in, n_out)
-                ),
-                dtype=theano.config.floatX
-            )
-            if activation == theano.tensor.nnet.sigmoid:
-                W_values *= 4
-
-            W = theano.shared(value=W_values, name='W', borrow=True)
-
-        if b is None:
-            b_values = np.zeros((n_out,), dtype=theano.config.floatX)
-            b = theano.shared(value=b_values, name='b', borrow=True)
-
-        self.W = W
-        self.b = b
-
-        lin_output = T.dot(input, self.W) + self.b
-        self.output = (
-            lin_output if activation is None
-            else activation(lin_output)
-        )
-        # parameters of the model
-        self.params = [self.W, self.b]
+from mlp import HiddenLayer
 
 
 def _dropsout(rng, layer, p):
     srng = theano.tensor.shared_randomstreams.RandomStreams(rng.randint(1000))
     mask = srng.binomial(n=1, p=1-p, size=layer.shape)
     output = layer*T.cast(mask, theano.config.floatX)
-    return output
-
-
-class HiddenDropoutLayer(HiddenLayer):
-    def __init__(self, rng, input, n_in, n_out,
-                 activation, dropout_rate, W=None, b=None):
-
-        """
-        Dropout layer of a MLP. Weight matrix W is of shape (n_in,n_out)
-        and the bias vector b is of shape (n_out,).
-
-        :type rng: numpy.random.RandomState
-        :param rng: a random number generator used to initialize weights
-
-        :type input: theano.tensor.dmatrix
-        :param input: a symbolic tensor of shape (n_examples, n_in)
-
-        :type n_in: int
-        :param n_in: dimensionality of input
-
-        :type n_out: int
-        :param n_out: number of hidden units
-
-        :type activation: theano.Op or function
-        :param activation: Non linearity to be applied in the hidden
-                           layer
-        :type dropout_rate: list 
-        :param dropout_rate: array containing probabilities of retaining a unit
-        """
-        super(HiddenDropoutLayer, self).__init__(
-                rng=rng, input=input, n_in=n_in, n_out=n_out, W=W, b=b,
-                activation=activation)
-
-        self.output = _dropsout(rng, self.output, p=dropout_rate)
+    return output / (1 - p)
     
 
-class MLP(object):
-    """Multi-Layer Perceptron Class
+class DropoutMLP(object):
+    """Multi-Layer Perceptron Class with partial hidden units
 
-    A multilayer perceptron is a feedforward artificial neural network model
-    that has one layer or more of hidden units and nonlinear activations.
-    Intermediate layers usually have as activation function tanh or the
-    sigmoid function (defined here by a ``HiddenLayer`` class)  while the
-    top layer is a softmax layer (defined here by a ``LogisticRegression``
-    class).
+    An implementation of Multilayer Perceptron with dropping of hidden units at a probability 
+    given by ```1-dropout_rate```.
     """
 
     def __init__(self, rng, input, n_in, n_hidden, dropout_rates, n_out):
@@ -167,11 +57,11 @@ class MLP(object):
         #Dropping out the input layer
         inp_dropout_layer = _dropsout(rng, input, p=dropout_rates[0])
         
-        self.drop_layer = HiddenDropoutLayer(rng=rng,
+        self.drop_layer = HiddenLayer(rng=rng,
                     input=inp_dropout_layer,
-                    activation=T.tanh,
                     n_in=n_in, n_out=n_hidden,
-                    dropout_rate=dropout_rates[1])
+                    activation=T.tanh)
+        self.drop_layer.output = _dropsout(rng, self.drop_layer.output, p=dropout_rates[1])
         
 
         # Since we are dealing with a one hidden layer MLP, this will translate
@@ -183,7 +73,7 @@ class MLP(object):
             input=input,
             n_in=n_in,
             n_out=n_hidden,
-            W=self.drop_layer.W * (1 - dropout_rates[1]),
+            W=self.drop_layer.W,
             b=self.drop_layer.b,
             activation=T.tanh
         )
@@ -201,7 +91,7 @@ class MLP(object):
             input=self.hiddenLayer.output,
             n_in=n_hidden,
             n_out=n_out,
-            W=self.drop_output_layer.W * (1 - dropout_rates[-1]),
+            W=self.drop_output_layer.W,
             b=self.drop_output_layer.b,
         )
         
@@ -280,7 +170,7 @@ def test_mlp(learning_rate=0.01, n_epochs=1000, dropout_rates = [0.2, 0.5],
 
 
     # construct the MLP class
-    classifier = MLP(
+    classifier = HiddenMLP(
         rng=rng,
         input=x,
         n_in=28 * 28,
